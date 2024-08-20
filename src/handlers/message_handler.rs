@@ -10,11 +10,14 @@ use super::{AppError, Query};
 const MAX_TTL_SECS: u16 = 500;
 const MIN_ALLOWED_TTL_SECS: u16 = 10;
 
-pub async fn message_handler(
+pub async fn message_handler<S>(
     Query(query): Query<SendMessageQueryParams>,
-    State(state): State<AppState>,
+    State(state): State<AppState<S>>,
     body: String,
-) -> Result<Json<SendMessageResponse>, AppError> {
+) -> Result<Json<SendMessageResponse>, AppError>
+where
+    S: EventStorage,
+{
     let from = query.client_id;
     let to = query.to;
 

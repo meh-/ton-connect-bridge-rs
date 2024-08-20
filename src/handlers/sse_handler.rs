@@ -15,10 +15,13 @@ use std::{convert::Infallible, time::Duration};
 
 const HEARTBEAT_INTERVAL_SECS: u64 = 5;
 
-pub async fn sse_handler(
+pub async fn sse_handler<S>(
     Query(params): Query<SubscribeToEventsQueryParams>,
-    State(state): State<AppState>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    State(state): State<AppState<S>>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError>
+where
+    S: EventStorage,
+{
     let mut old_events_streams = vec![];
     if let Some(last_event_id) = params.last_event_id {
         for client_id in &params.client_ids {
