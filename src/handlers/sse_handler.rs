@@ -2,9 +2,9 @@ use super::{AppError, Query};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
-use crate::models::TonEvent;
 use crate::server::AppState;
 use crate::storage::EventStorage;
+use crate::{message_courier::MessageCourier, models::TonEvent};
 use axum::{
     extract::State,
     response::sse::{self, Event, Sse},
@@ -15,12 +15,13 @@ use std::{convert::Infallible, time::Duration};
 
 const HEARTBEAT_INTERVAL_SECS: u64 = 5;
 
-pub async fn sse_handler<S>(
+pub async fn sse_handler<S, C>(
     Query(params): Query<SubscribeToEventsQueryParams>,
-    State(state): State<AppState<S>>,
+    State(state): State<AppState<S, C>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError>
 where
     S: EventStorage,
+    C: MessageCourier,
 {
     let mut old_events_streams = vec![];
     if let Some(last_event_id) = params.last_event_id {

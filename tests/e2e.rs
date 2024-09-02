@@ -9,7 +9,9 @@ use testcontainers_modules::{
     testcontainers::{runners::AsyncRunner, ContainerAsync},
 };
 use ton_connect_bridge_rs::{
-    handlers::SendMessageResponse, message_courier::MessageCourier, server,
+    handlers::SendMessageResponse,
+    message_courier::{MessageCourier, RedisMessageCourier},
+    server,
     storage::RedisEventStorage,
 };
 
@@ -32,7 +34,7 @@ async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
     );
 
     let redis_client = redis::Client::open(redis_url).unwrap();
-    let subscription_manager = MessageCourier::new(redis_client);
+    let subscription_manager = RedisMessageCourier::new(redis_client);
 
     let manager = subscription_manager.clone();
     manager.start("messages");

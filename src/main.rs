@@ -3,7 +3,7 @@ use bb8_redis::RedisConnectionManager;
 use redis::AsyncCommands;
 use std::sync::Arc;
 use std::time::Duration;
-use ton_connect_bridge_rs::message_courier::MessageCourier;
+use ton_connect_bridge_rs::message_courier::{MessageCourier, RedisMessageCourier};
 use ton_connect_bridge_rs::storage::RedisEventStorage;
 use ton_connect_bridge_rs::{config, server};
 use tracing::Level;
@@ -36,7 +36,7 @@ async fn main() {
     }
 
     let redis_client = redis::Client::open(cfg.redis_url).unwrap();
-    let subscription_manager = MessageCourier::new(redis_client);
+    let subscription_manager = RedisMessageCourier::new(redis_client);
 
     let manager = subscription_manager.clone();
     manager.start("messages");

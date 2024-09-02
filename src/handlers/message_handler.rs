@@ -10,9 +10,9 @@ use super::{AppError, Query};
 const MAX_TTL_SECS: u16 = 500;
 const MIN_ALLOWED_TTL_SECS: u16 = 10;
 
-pub async fn message_handler<S>(
+pub async fn message_handler<S, C>(
     Query(query): Query<SendMessageQueryParams>,
-    State(state): State<AppState<S>>,
+    State(state): State<AppState<S, C>>,
     body: String,
 ) -> Result<Json<SendMessageResponse>, AppError>
 where

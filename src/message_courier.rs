@@ -8,21 +8,28 @@ use tokio::sync::mpsc::{self};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 
+pub trait MessageCourier: Send + Sync {
+    fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent>;
+    fn start(self, channel: &str);
+}
+
 #[derive(Clone)]
-pub struct MessageCourier {
+pub struct RedisMessageCourier {
     clients: Arc<Mutex<HashMap<String, UnboundedSender<TonEvent>>>>,
     redis: Arc<redis::Client>,
 }
 
-impl MessageCourier {
+impl RedisMessageCourier {
     pub fn new(redis: redis::Client) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
             redis: Arc::new(redis),
         }
     }
+}
 
-    pub fn start(self, channel: &str) {
+impl MessageCourier for RedisMessageCourier {
+    fn start(self, channel: &str) {
         let channel = channel.to_string();
 
         tokio::spawn(async move {
@@ -51,7 +58,7 @@ impl MessageCourier {
         });
     }
 
-    pub fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent> {
+    fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent> {
         let (tx, rx) = mpsc::unbounded_channel::<TonEvent>();
         self.clients.lock().unwrap().insert(client_id, tx.clone());
         rx

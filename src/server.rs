@@ -9,9 +9,10 @@ use std::sync::Arc;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
 
-pub fn router<S>(app_state: AppState<S>) -> Router
+pub fn router<S, C>(app_state: AppState<S, C>) -> Router
 where
     S: EventStorage + Clone + 'static,
+    C: MessageCourier + Clone + 'static,
 {
     Router::new()
         .route("/events", get(sse_handler))
@@ -36,7 +37,7 @@ pub async fn start(router: Router, port: u64) {
 }
 
 #[derive(Clone)]
-pub struct AppState<S> {
+pub struct AppState<S, C> {
     pub event_saver: Arc<S>,
-    pub subscription_manager: Arc<MessageCourier>,
+    pub subscription_manager: Arc<C>,
 }
