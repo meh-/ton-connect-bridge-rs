@@ -45,9 +45,25 @@ impl From<EventStorageError> for AppError {
     fn from(e: EventStorageError) -> Self {
         tracing::error!("unexpected EventStorageError: {e}");
 
-        AppError {
+        Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "something went wrong".into(),
+        }
+    }
+}
+
+pub struct ValidationError(String);
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<ValidationError> for AppError {
+    fn from(e: ValidationError) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
         }
     }
 }

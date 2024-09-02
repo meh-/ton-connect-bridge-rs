@@ -5,10 +5,11 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{AppError, Query};
+use super::{AppError, Query, ValidationError};
 
 const MAX_TTL_SECS: u16 = 500;
 const MIN_ALLOWED_TTL_SECS: u16 = 10;
+const MAX_CLIENT_ID_LEN: usize = 64;
 
 pub async fn message_handler<S, C>(
     Query(query): Query<SendMessageQueryParams>,
@@ -18,8 +19,7 @@ pub async fn message_handler<S, C>(
 where
     S: EventStorage,
 {
-    let from = query.client_id;
-    let to = query.to;
+    query.validate()?;
 
     let ttl = query
         .ttl
@@ -35,8 +35,8 @@ where
     let deadline = SystemTime::now() + Duration::from_secs(ttl.into());
     let event = TonEvent {
         id: "".to_string(),
-        from,
-        to,
+        from: query.client_id,
+        to: query.to,
         message: body,
         deadline: deadline.duration_since(UNIX_EPOCH).unwrap().as_secs(),
     };
@@ -54,6 +54,42 @@ pub struct SendMessageQueryParams {
     client_id: String,
     to: String,
     ttl: Option<u16>,
+}
+
+impl SendMessageQueryParams {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.client_id.is_empty() {
+            return Err(ValidationError(
+                "Failed to deserialize query string: empty field `client_id`".into(),
+            ));
+        }
+        if self.client_id.len() > MAX_CLIENT_ID_LEN {
+            return Err(ValidationError(
+                format!("Failed to deserialize query string: field `client_id` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+            ));
+        }
+
+        if self.to.is_empty() {
+            return Err(ValidationError(
+                "Failed to deserialize query string: empty field `to`".into(),
+            ));
+        }
+        if self.to.len() > MAX_CLIENT_ID_LEN {
+            return Err(ValidationError(
+                format!("Failed to deserialize query string: field `to` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+            ));
+        }
+
+        if let Some(ttl) = self.ttl {
+            if ttl > MAX_TTL_SECS {
+                return Err(ValidationError(
+                    format!("Failed to deserialize query string: `ttl` value must be less than {MAX_TTL_SECS}"),
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -149,6 +185,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_missing_client_id() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: "Failed to deserialize query string: missing field `client_id`".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "cli=1&to=2".to_string();
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_empty_client_id() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: "Failed to deserialize query string: empty field `client_id`".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "client_id=&to=2".to_string();
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_too_long_client_id() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: format!("Failed to deserialize query string: field `client_id` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let long_id = "a".repeat(MAX_CLIENT_ID_LEN + 1);
+        let q_string = format!("client_id={long_id}&to=2");
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
     async fn test_missing_to() {
         let saver_mock = MockStorage::new();
         let expected_resp = json!(AppError {
@@ -166,14 +254,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_client_id() {
+    async fn test_empty_to() {
         let saver_mock = MockStorage::new();
         let expected_resp = json!(AppError {
-            message: "Failed to deserialize query string: missing field `client_id`".to_string(),
+            message: "Failed to deserialize query string: empty field `to`".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
 
-        let q_string = "cli=1&to=2".to_string();
+        let q_string = "client_id=1&to=".to_string();
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_too_long_to() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: format!("Failed to deserialize query string: field `to` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let long_id = "a".repeat(MAX_CLIENT_ID_LEN + 1);
+        let q_string = format!("client_id=1&to={long_id}");
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_large_ttl() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: format!(
+                "Failed to deserialize query string: `ttl` value must be less than {MAX_TTL_SECS}"
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let ttl = MAX_TTL_SECS + 1;
+        let q_string = format!("client_id=1&to=2&ttl={ttl}");
         let req_body = axum::body::Body::empty();
 
         let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
