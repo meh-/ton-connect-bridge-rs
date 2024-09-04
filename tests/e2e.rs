@@ -67,7 +67,8 @@ async fn test_post_and_receive_single_message() {
     assert_eq!(StatusCode::OK, events_resp.status());
     let mut events_resp_stream = events_resp.bytes_stream();
 
-    let message = "hello world!";
+    // "hello world!" in base64
+    let message = "aGVsbG8gd29ybGQh";
 
     let msg_resp = server
         .post("/message?client_id=app&to=test_client")
@@ -97,7 +98,7 @@ async fn test_post_and_receive_single_message() {
     assert_eq!("event: message", actual_event_parts[0]);
     assert!(actual_event_parts[1].starts_with("id: "));
     assert_eq!(
-        "data: {\"from\":\"app\",\"message\":\"hello world!\"}",
+        "data: {\"from\":\"app\",\"message\":\"aGVsbG8gd29ybGQh\"}",
         actual_event_parts[2]
     );
     assert_eq!("", actual_event_parts[3]);

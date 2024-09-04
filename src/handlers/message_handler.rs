@@ -2,6 +2,7 @@ use crate::models::TonEvent;
 use crate::server::AppState;
 use crate::storage::EventStorage;
 use axum::{extract::State, http::StatusCode, Json};
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +21,7 @@ where
     S: EventStorage,
 {
     query.validate()?;
+    validate_message_body(&body)?;
 
     let ttl = query
         .ttl
@@ -90,6 +92,21 @@ impl SendMessageQueryParams {
 
         Ok(())
     }
+}
+
+fn validate_message_body(body: &String) -> Result<(), ValidationError> {
+    if body.is_empty() {
+        return Err(ValidationError("Missing request body".into()));
+    }
+    match BASE64_STANDARD.decode(&body) {
+        Ok(_) => (),
+        Err(_) => {
+            return Err(ValidationError(
+                "Request body must be a valid base64 message".into(),
+            ))
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -301,6 +318,40 @@ mod tests {
         let ttl = MAX_TTL_SECS + 1;
         let q_string = format!("client_id=1&to=2&ttl={ttl}");
         let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_missing_message_body() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: "Missing request body".into(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "client_id=1&to=2".to_string();
+        let req_body = axum::body::Body::empty();
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_not_base64_request_body() {
+        let saver_mock = MockStorage::new();
+        let expected_resp = json!(AppError {
+            message: "Request body must be a valid base64 message".into(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "client_id=1&to=2".to_string();
+        let req_body = axum::body::Body::from("hello world!");
 
         let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
 

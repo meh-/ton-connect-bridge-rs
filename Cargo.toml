@@ -25,6 +25,7 @@ redis = { version = "0.25.4", features = [
 bb8 = "0.8.5"
 bb8-redis = "0.15.0"
 tower-http = { version = "0.5.2", features = ["trace"] }
+base64 = "0.22"
 
 [dev-dependencies]
 testcontainers-modules = { version = "0.9.0", features = ["redis"] }
