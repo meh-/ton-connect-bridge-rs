@@ -358,4 +358,39 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(resp_body, expected_resp)
     }
+
+    #[tokio::test]
+    async fn test_valid_request_with_ttl() {
+        let mut saver_mock = MockStorage::new();
+        saver_mock
+            .expect_add()
+            .withf(|event: &TonEvent| {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                event.id == ""
+                    && event.from == "1"
+                    && event.to == "2"
+                    && event.message == BASE64_STANDARD.encode("hello world!")
+                    // the difference between the deadline and current timestamp
+                    // should be close to the specified in the request ttl
+                    && (98..=100).contains(&(event.deadline - now))
+            })
+            .returning(|_| Box::pin(async { Ok(()) }));
+
+        let expected_resp = json!(SendMessageResponse {
+            code: StatusCode::OK.into(),
+            message: "OK".to_owned(),
+        });
+
+        let q_string = "client_id=1&to=2&ttl=100".to_string();
+        let req_body = axum::body::Body::from(BASE64_STANDARD.encode("hello world!"));
+
+        let (status, resp_body) = exec(saver_mock, q_string, req_body).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp_body, expected_resp)
+    }
 }
