@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
@@ -25,10 +26,8 @@ where
         .with_state(app_state)
 }
 
-pub async fn start(router: Router, port: u64) {
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
+pub async fn start(router: Router, address: SocketAddr) {
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
 
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, router)

@@ -4,3 +4,11 @@ services:
     image: redis:alpine
     ports:
       - 6379:6379
+
+  server:
+    build: .
+    environment:
+      - TB_REDIS_URL=redis://redis:6379
+      - TB_SERVER_ADDRESS=0.0.0.0:3000
+    ports:
+      - 3000:3000

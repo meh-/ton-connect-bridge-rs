@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use config::{Environment, File};
 use serde::Deserialize;
 
@@ -5,7 +7,7 @@ use serde::Deserialize;
 pub struct Config {
     pub redis_url: String,
     pub redis_conn_timeout_sec: u64,
-    pub server_port: u64,
+    pub server_address: SocketAddr,
 }
 
 impl Config {
