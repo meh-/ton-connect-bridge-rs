@@ -89,7 +89,8 @@ impl EventStorage for RedisEventStorage {
         let mut events = Vec::new();
 
         let srr: StreamRangeReply = conn
-            .xrange(inbox_key, event_id, "+")
+            // prefix the event_id with '\(' to get all entries after that id
+            .xrange(inbox_key, format!("({}", event_id), "+")
             .await
             .map_err(|err| EventStorageError(err.to_string()))?;
 

@@ -9,7 +9,7 @@ use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use testcontainers_modules::{
     redis::{Redis, REDIS_PORT},
-    testcontainers::{runners::AsyncRunner, ContainerAsync},
+    testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
 use ton_connect_bridge_rs::{
     handlers::SendMessageResponse,
@@ -19,7 +19,7 @@ use ton_connect_bridge_rs::{
 };
 
 async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
-    let redis_container = Redis::default().start().await.unwrap();
+    let redis_container = Redis::default().with_tag("alpine").start().await.unwrap();
     let host_ip = redis_container.get_host().await.unwrap();
     let host_port = redis_container
         .get_host_port_ipv4(REDIS_PORT)
@@ -69,7 +69,7 @@ fn validate_sse_message(
     >,
     expected_from: &str,
     expected_message: &str,
-) {
+) -> eventsource_stream::Event {
     let event = event_result.expect("unexpected event error");
 
     assert_eq!("message", event.event);
@@ -82,9 +82,21 @@ fn validate_sse_message(
         "from": expected_from,
         "message": BASE64_STANDARD.encode(expected_message),
     });
-    assert_eq!(expected_data, parsed_data, "unexpected message data");
+    assert_eq!(
+        expected_data,
+        parsed_data,
+        "unexpected data content\nexpected message: {},\nactual message: {}",
+        expected_message,
+        String::from_utf8(
+            BASE64_STANDARD
+                .decode(parsed_data["message"].as_str().unwrap_or_default())
+                .unwrap_or_default()
+        )
+        .unwrap_or_default(),
+    );
 
     assert!(event.retry.is_none(), "retry field must be empty");
+    event
 }
 
 async fn must_send_message(server: &TestServer, from: &str, to: &str, message: &str) {
@@ -117,7 +129,12 @@ async fn must_subscribe_to_events(
     }
 
     let response = Client::new().get(&url).send().await.unwrap();
-    assert_eq!(StatusCode::OK, response.status());
+    assert_eq!(
+        StatusCode::OK,
+        response.status(),
+        "response body: {}",
+        response.text().await.unwrap()
+    );
     assert_eq!(
         "text/event-stream",
         response.headers()[reqwest::header::CONTENT_TYPE],
@@ -194,4 +211,52 @@ async fn test_multiple_clients_communication() {
             i
         );
     }
+}
+
+#[tokio::test]
+async fn test_wallet_reconnection_with_missed_messages() {
+    let (server, _redis_container) = start_test_server().await;
+    let server_url = server.server_address().unwrap();
+
+    // SSE connection for Wallet
+    let mut wallet_stream = must_subscribe_to_events(&server_url, "wallet", None).await;
+    // SSE connection for Dapp
+    let mut dapp_stream = must_subscribe_to_events(&server_url, "dapp", None).await;
+
+    // Wallet sends a message to Dapp
+    let wallet_msg = "Hello from Wallet";
+    must_send_message(&server, "wallet", "dapp", &wallet_msg).await;
+    // verify Dapp receives the message
+    let dapp_chunk = dapp_stream.next().await.unwrap();
+    validate_sse_message(dapp_chunk, "wallet", &wallet_msg);
+
+    // Dapp sends a message to Wallet
+    let dapp_msg = "Hello from Dapp";
+    must_send_message(&server, "dapp", "wallet", &dapp_msg).await;
+    // verify Wallet receives the message
+    let wallet_chunk = wallet_stream.next().await.unwrap();
+    // extract the event id to use on reconnect
+    let last_event_id = validate_sse_message(wallet_chunk, "dapp", &dapp_msg).id;
+
+    // Wallet disconnects
+    drop(wallet_stream);
+
+    // Dapp sends 5 more messages while Wallet is disconnected
+    for i in 0..5 {
+        let msg = format!("Offline message {}", i);
+        must_send_message(&server, "dapp", "wallet", &msg).await;
+    }
+
+    // Wallet reconnects using the last received event id
+    let mut reconnected_wallet_stream =
+        must_subscribe_to_events(&server_url, "wallet", Some(&last_event_id)).await;
+    // verify Wallet receives the 5 missed messages
+    for i in 0..5 {
+        let chunk = reconnected_wallet_stream.next().await.unwrap();
+        let expected_msg = format!("Offline message {}", i);
+        validate_sse_message(chunk, "dapp", &expected_msg);
+    }
+
+    // verify that there aren't more messages left for the Wallet
+    assert!(reconnected_wallet_stream.next().now_or_never().is_none());
 }
