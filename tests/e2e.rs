@@ -1,8 +1,11 @@
 use axum::http::StatusCode;
 use axum_test::{TestServer, TestServerConfig};
+use base64::prelude::*;
 use bb8_redis::RedisConnectionManager;
-use futures::stream::StreamExt;
-use reqwest::Client;
+use bytes::Bytes;
+use futures::{stream::StreamExt, FutureExt, Stream};
+use reqwest::{Client, Url};
+use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use testcontainers_modules::{
     redis::{Redis, REDIS_PORT},
@@ -53,54 +56,155 @@ async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
     )
 }
 
-#[tokio::test]
-async fn test_post_and_receive_single_message() {
-    let (server, _redis_container) = start_test_server().await;
-    let server_url = server.server_address().unwrap();
+// expected SSE event line by line:
+// event: message
+// id: <any string>
+// data: {"from":<message author>,"message":<message data>}
+// <empty line>
+// <empty line>
+fn validate_sse_message(chunk: Bytes, expected_from: &str, expected_message: &str) {
+    let event = String::from_utf8(chunk.to_vec()).expect("Failed to convert Bytes to UTF-8 string");
 
-    let client = Client::new();
-    let events_resp = client
-        .get(&format!("{}events?client_id=test_client", server_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(StatusCode::OK, events_resp.status());
-    let mut events_resp_stream = events_resp.bytes_stream();
+    let lines: Vec<&str> = event.split('\n').collect();
+    assert_eq!(
+        5,
+        lines.len(),
+        "each SSE message should have 5 lines, actual message:\n{}\nwith {} lines",
+        event,
+        lines.len()
+    );
+    assert_eq!("event: message", lines[0],);
+    assert!(
+        lines[1].starts_with("id: ") && lines[1].len() > 5,
+        "second line should be a non-empty 'id' field"
+    );
 
-    // "hello world!" in base64
-    let message = "aGVsbG8gd29ybGQh";
+    let data_raw_line = lines[2];
+    let data_line_prefix = "data: ";
+    assert!(
+        data_raw_line.starts_with(data_line_prefix),
+        "third line should be valid 'data' field"
+    );
+    let data_content = &data_raw_line[data_line_prefix.len()..];
+    let parsed_data: serde_json::Value =
+        serde_json::from_str(data_content).expect("failed to parse JSON data");
 
-    let msg_resp = server
-        .post("/message?client_id=app&to=test_client")
-        .bytes(message.into())
+    let expected_data = json!({
+        "from": expected_from,
+        "message": BASE64_STANDARD.encode(expected_message),
+    });
+    assert_eq!(expected_data, parsed_data, "unexpected message data");
+
+    assert_eq!(
+        ("", ""),
+        (lines[3], lines[4]),
+        "last two lines should be empty"
+    );
+}
+
+async fn must_send_message(server: &TestServer, from: &str, to: &str, message: &str) {
+    let resp = server
+        .post(&format!("/message?client_id={}&to={}", from, to))
+        .bytes(BASE64_STANDARD.encode(message).into())
         .await;
-    msg_resp.assert_status(StatusCode::OK);
-    msg_resp.assert_text(
+
+    resp.assert_status(StatusCode::OK);
+    resp.assert_text(
         serde_json::to_string(&SendMessageResponse {
             message: "OK".to_owned(),
             code: 200,
         })
         .unwrap(),
     );
-    // read the SSE stream and verify the message
-    let chunk = events_resp_stream.next().await.unwrap();
-    let chunk = chunk.unwrap();
-    let actual_event = String::from_utf8(chunk.to_vec()).unwrap();
+}
 
-    let actual_event_parts: Vec<&str> = actual_event.split('\n').collect();
-    // expected event split line by line:
-    // event: message
-    // id: <any string>
-    // data: {"from":<message author>,"message":<message data>}
-    // <empty line>
-    // <empty line>
-    assert_eq!(5, actual_event_parts.len());
-    assert_eq!("event: message", actual_event_parts[0]);
-    assert!(actual_event_parts[1].starts_with("id: "));
+async fn must_subscribe_to_events(
+    server_url: &Url,
+    client_id: &str,
+    last_event_id: Option<&str>,
+) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
+    let mut url = format!("{}events?client_id={}", server_url, client_id);
+
+    if let Some(event_id) = last_event_id {
+        url.push_str(&format!("&last_event_id={}", event_id));
+    }
+
+    let response = Client::new().get(&url).send().await.unwrap();
+    assert_eq!(StatusCode::OK, response.status());
     assert_eq!(
-        "data: {\"from\":\"app\",\"message\":\"aGVsbG8gd29ybGQh\"}",
-        actual_event_parts[2]
+        "text/event-stream",
+        response.headers()[reqwest::header::CONTENT_TYPE],
+        "incorrect content-type header"
     );
-    assert_eq!("", actual_event_parts[3]);
-    assert_eq!("", actual_event_parts[4]);
+    assert_eq!(
+        "no-cache",
+        response.headers()[reqwest::header::CACHE_CONTROL],
+        "incorrect cache-control header"
+    );
+
+    response.bytes_stream()
+}
+
+#[tokio::test]
+async fn test_post_and_receive_single_message() {
+    let (server, _redis_container) = start_test_server().await;
+    let server_url = server.server_address().unwrap();
+
+    let client_id = "test_client";
+    let mut events_resp_stream = must_subscribe_to_events(&server_url, &client_id, None).await;
+
+    let message = "hello world!";
+    must_send_message(&server, "app", &client_id, &message).await;
+
+    let chunk = events_resp_stream.next().await.unwrap().unwrap();
+    validate_sse_message(chunk, "app", &message);
+}
+
+#[tokio::test]
+async fn test_multiple_clients_communication() {
+    let (server, _redis_container) = start_test_server().await;
+    let server_url = server.server_address().unwrap();
+
+    // SSE connections for N Wallets
+    const NUM_WALLETS: usize = 20;
+    let mut wallet_streams = Vec::with_capacity(NUM_WALLETS);
+    for w_idx in 0..NUM_WALLETS {
+        let w_stream =
+            must_subscribe_to_events(&server_url, &format!("wallet_{}", w_idx), None).await;
+        wallet_streams.push(w_stream);
+    }
+
+    // SSE connection for Dapp
+    let mut dapp_stream = must_subscribe_to_events(&server_url, "dapp", None).await;
+
+    const NUM_MESSAGE_CYCLES: usize = 5;
+    for cycle_idx in 0..NUM_MESSAGE_CYCLES {
+        // each Wallet sends a message to Dapp
+        for w_idx in 0..NUM_WALLETS {
+            let wallet_msg = format!("[cycle{}] Hello from Wallet{}", cycle_idx, w_idx);
+            must_send_message(&server, &format!("wallet_{}", w_idx), "dapp", &wallet_msg).await;
+
+            // verify Dapp receives the message from the wallet
+            let dapp_chunk = dapp_stream.next().await.unwrap().unwrap();
+            validate_sse_message(dapp_chunk, &format!("wallet_{w_idx}"), &wallet_msg);
+        }
+
+        // Dapp replies to each wallet
+        for w_idx in 0..NUM_WALLETS {
+            let dapp_reply = format!("Reply to Wallet{}", w_idx);
+            must_send_message(&server, "dapp", &format!("wallet_{}", w_idx), &dapp_reply).await;
+
+            // verify the wallet receives the reply
+            let wallet_chunk = wallet_streams[w_idx].next().await.unwrap().unwrap();
+            validate_sse_message(wallet_chunk, "dapp", &dapp_reply);
+        }
+    }
+    // verify that there aren't more messages left for the Wallets
+    for (i, mut stream) in wallet_streams.into_iter().enumerate() {
+        assert!(
+            stream.next().now_or_never().is_none(),
+            "wallet_{} received an unexpected message",
+            i
+        );
+    }
 }
