@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum_test::{TestServer, TestServerConfig};
 use base64::prelude::*;
 use bb8_redis::RedisConnectionManager;
-use bytes::Bytes;
+use eventsource_stream::Eventsource;
 use futures::{stream::StreamExt, FutureExt, Stream};
 use reqwest::{Client, Url};
 use serde_json::json;
@@ -62,32 +62,21 @@ async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
 // data: {"from":<message author>,"message":<message data>}
 // <empty line>
 // <empty line>
-fn validate_sse_message(chunk: Bytes, expected_from: &str, expected_message: &str) {
-    let event = String::from_utf8(chunk.to_vec()).expect("Failed to convert Bytes to UTF-8 string");
+fn validate_sse_message(
+    event_result: Result<
+        eventsource_stream::Event,
+        eventsource_stream::EventStreamError<reqwest::Error>,
+    >,
+    expected_from: &str,
+    expected_message: &str,
+) {
+    let event = event_result.expect("unexpected event error");
 
-    let lines: Vec<&str> = event.split('\n').collect();
-    assert_eq!(
-        5,
-        lines.len(),
-        "each SSE message should have 5 lines, actual message:\n{}\nwith {} lines",
-        event,
-        lines.len()
-    );
-    assert_eq!("event: message", lines[0],);
-    assert!(
-        lines[1].starts_with("id: ") && lines[1].len() > 5,
-        "second line should be a non-empty 'id' field"
-    );
+    assert_eq!("message", event.event);
+    assert!(event.id.len() > 5, "id must be a non-empty string");
 
-    let data_raw_line = lines[2];
-    let data_line_prefix = "data: ";
-    assert!(
-        data_raw_line.starts_with(data_line_prefix),
-        "third line should be valid 'data' field"
-    );
-    let data_content = &data_raw_line[data_line_prefix.len()..];
     let parsed_data: serde_json::Value =
-        serde_json::from_str(data_content).expect("failed to parse JSON data");
+        serde_json::from_str(&event.data).expect("failed to parse content JSON data");
 
     let expected_data = json!({
         "from": expected_from,
@@ -95,11 +84,7 @@ fn validate_sse_message(chunk: Bytes, expected_from: &str, expected_message: &st
     });
     assert_eq!(expected_data, parsed_data, "unexpected message data");
 
-    assert_eq!(
-        ("", ""),
-        (lines[3], lines[4]),
-        "last two lines should be empty"
-    );
+    assert!(event.retry.is_none(), "retry field must be empty");
 }
 
 async fn must_send_message(server: &TestServer, from: &str, to: &str, message: &str) {
@@ -122,7 +107,9 @@ async fn must_subscribe_to_events(
     server_url: &Url,
     client_id: &str,
     last_event_id: Option<&str>,
-) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
+) -> impl Stream<
+    Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<reqwest::Error>>,
+> {
     let mut url = format!("{}events?client_id={}", server_url, client_id);
 
     if let Some(event_id) = last_event_id {
@@ -142,7 +129,7 @@ async fn must_subscribe_to_events(
         "incorrect cache-control header"
     );
 
-    response.bytes_stream()
+    response.bytes_stream().eventsource()
 }
 
 #[tokio::test]
@@ -156,7 +143,7 @@ async fn test_post_and_receive_single_message() {
     let message = "hello world!";
     must_send_message(&server, "app", &client_id, &message).await;
 
-    let chunk = events_resp_stream.next().await.unwrap().unwrap();
+    let chunk = events_resp_stream.next().await.unwrap();
     validate_sse_message(chunk, "app", &message);
 }
 
@@ -185,7 +172,7 @@ async fn test_multiple_clients_communication() {
             must_send_message(&server, &format!("wallet_{}", w_idx), "dapp", &wallet_msg).await;
 
             // verify Dapp receives the message from the wallet
-            let dapp_chunk = dapp_stream.next().await.unwrap().unwrap();
+            let dapp_chunk = dapp_stream.next().await.unwrap();
             validate_sse_message(dapp_chunk, &format!("wallet_{w_idx}"), &wallet_msg);
         }
 
@@ -195,7 +182,7 @@ async fn test_multiple_clients_communication() {
             must_send_message(&server, "dapp", &format!("wallet_{}", w_idx), &dapp_reply).await;
 
             // verify the wallet receives the reply
-            let wallet_chunk = wallet_streams[w_idx].next().await.unwrap().unwrap();
+            let wallet_chunk = wallet_streams[w_idx].next().await.unwrap();
             validate_sse_message(wallet_chunk, "dapp", &dapp_reply);
         }
     }
