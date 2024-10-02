@@ -8,8 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{AppError, Query, ValidationError};
 
-const MAX_TTL_SECS: u16 = 500;
-const MIN_ALLOWED_TTL_SECS: u16 = 10;
 const MAX_CLIENT_ID_LEN: usize = 64;
 
 pub async fn message_handler<S, C>(
@@ -20,19 +18,19 @@ pub async fn message_handler<S, C>(
 where
     S: EventStorage,
 {
-    query.validate()?;
+    query.validate(state.config.inbox_max_message_ttl_sec)?;
     validate_message_body(&body)?;
 
     let ttl = query
         .ttl
         .map(|v| {
-            if v >= MIN_ALLOWED_TTL_SECS {
+            if v >= state.config.inbox_min_message_ttl_sec {
                 v
             } else {
-                MAX_TTL_SECS
+                state.config.inbox_max_message_ttl_sec
             }
         })
-        .unwrap_or(MAX_TTL_SECS);
+        .unwrap_or(state.config.inbox_max_message_ttl_sec);
 
     let deadline = SystemTime::now() + Duration::from_secs(ttl.into());
     let event = TonEvent {
@@ -59,7 +57,7 @@ pub struct SendMessageQueryParams {
 }
 
 impl SendMessageQueryParams {
-    fn validate(&self) -> Result<(), ValidationError> {
+    fn validate(&self, max_ttl_sec: u16) -> Result<(), ValidationError> {
         if self.client_id.is_empty() {
             return Err(ValidationError(
                 "Failed to deserialize query string: empty field `client_id`".into(),
@@ -83,9 +81,9 @@ impl SendMessageQueryParams {
         }
 
         if let Some(ttl) = self.ttl {
-            if ttl > MAX_TTL_SECS {
+            if ttl > max_ttl_sec {
                 return Err(ValidationError(
-                    format!("Failed to deserialize query string: `ttl` value must be less than {MAX_TTL_SECS}"),
+                    format!("Failed to deserialize query string: `ttl` value must be less than {max_ttl_sec}"),
                 ));
             }
         }
@@ -119,13 +117,16 @@ pub struct SendMessageResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{message_courier::MessageCourier, storage::EventStorageError};
+    use crate::{config::Config, message_courier::MessageCourier, storage::EventStorageError};
     use axum::{http::Request, routing::post, Router};
     use mockall::mock;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::mpsc::UnboundedReceiver;
     use tower::util::ServiceExt;
+
+    const MAX_TTL: u16 = 200;
+    const MIN_TTL: u16 = 5;
 
     mock! {
         #[derive(Clone)]
@@ -176,7 +177,11 @@ mod tests {
         req_body: axum::body::Body,
     ) -> (StatusCode, serde_json::Value) {
         let courier_mock = MockCourier::new();
+        let mut config = Config::new().unwrap();
+        config.inbox_max_message_ttl_sec = MAX_TTL;
+        config.inbox_min_message_ttl_sec = MIN_TTL;
         let app_state = AppState {
+            config,
             event_saver: Arc::new(storage),
             subscription_manager: Arc::new(courier_mock),
         };
@@ -310,12 +315,12 @@ mod tests {
         let saver_mock = MockStorage::new();
         let expected_resp = json!(AppError {
             message: format!(
-                "Failed to deserialize query string: `ttl` value must be less than {MAX_TTL_SECS}"
+                "Failed to deserialize query string: `ttl` value must be less than {MAX_TTL}"
             ),
             status: StatusCode::BAD_REQUEST,
         });
 
-        let ttl = MAX_TTL_SECS + 1;
+        let ttl = MAX_TTL + 1;
         let q_string = format!("client_id=1&to=2&ttl={ttl}");
         let req_body = axum::body::Body::empty();
 

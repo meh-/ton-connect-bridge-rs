@@ -12,6 +12,7 @@ use testcontainers_modules::{
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
 use ton_connect_bridge_rs::{
+    config::Config,
     handlers::SendMessageResponse,
     message_courier::{MessageCourier, RedisMessageCourier},
     server,
@@ -20,30 +21,35 @@ use ton_connect_bridge_rs::{
 
 async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
     let redis_container = Redis::default().with_tag("alpine").start().await.unwrap();
-    let host_ip = redis_container.get_host().await.unwrap();
-    let host_port = redis_container
+    let redis_host = redis_container.get_host().await.unwrap();
+    let redis_port = redis_container
         .get_host_port_ipv4(REDIS_PORT)
         .await
         .unwrap();
-    let redis_url = format!("redis://{host_ip}:{host_port}");
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
 
     let redis_conn_manager = RedisConnectionManager::new(redis_url.clone()).unwrap();
-    let redis_pool = Arc::new(
-        bb8::Pool::builder()
-            .connection_timeout(Duration::from_secs(3))
-            .build(redis_conn_manager)
-            .await
-            .unwrap(),
-    );
+    let redis_pool = bb8::Pool::builder()
+        .connection_timeout(Duration::from_secs(3))
+        .build(redis_conn_manager)
+        .await
+        .unwrap();
 
-    let redis_client = redis::Client::open(redis_url).unwrap();
+    let redis_client = redis::Client::open(redis_url.clone()).unwrap();
     let subscription_manager = RedisMessageCourier::new(redis_client);
 
     let manager = subscription_manager.clone();
     manager.start("messages");
 
+    let config = Config::new().unwrap();
+    let event_storage = RedisEventStorage::new(
+        redis_pool,
+        config.inbox_inactive_ttl_sec,
+        config.inbox_max_messages_per_client,
+    );
     let app_state = server::AppState {
-        event_saver: Arc::new(RedisEventStorage { redis_pool }),
+        config,
+        event_saver: Arc::new(event_storage),
         subscription_manager: Arc::new(subscription_manager),
     };
 

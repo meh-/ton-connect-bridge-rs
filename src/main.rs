@@ -11,6 +11,8 @@ use tracing::Level;
 #[tokio::main]
 async fn main() {
     let cfg = config::Config::new().expect("loading app config");
+    // to pass the cfg later to the shared app state
+    let cfg_clone = cfg.clone();
 
     tracing_subscriber::fmt()
         .with_target(false)
@@ -20,13 +22,12 @@ async fn main() {
 
     let redis_conn_manager = RedisConnectionManager::new(cfg.redis_url.clone())
         .expect("initializing redis connection manager");
-    let redis_pool = Arc::new(
-        bb8::Pool::builder()
-            .connection_timeout(Duration::from_secs(cfg.redis_conn_timeout_sec))
-            .build(redis_conn_manager)
-            .await
-            .expect("building redis pool"),
-    );
+
+    let redis_pool = bb8::Pool::builder()
+        .connection_timeout(Duration::from_secs(cfg.redis_conn_timeout_sec))
+        .build(redis_conn_manager)
+        .await
+        .expect("building redis pool");
 
     {
         // ping redis before starting
@@ -45,8 +46,14 @@ async fn main() {
     let manager = subscription_manager.clone();
     manager.start("messages");
 
+    let event_storage = RedisEventStorage::new(
+        redis_pool,
+        cfg.inbox_inactive_ttl_sec,
+        cfg.inbox_max_messages_per_client,
+    );
     let app_state = server::AppState {
-        event_saver: Arc::new(RedisEventStorage { redis_pool }),
+        config: cfg_clone,
+        event_saver: Arc::new(event_storage),
         subscription_manager: Arc::new(subscription_manager),
     };
     let router = server::router(app_state);

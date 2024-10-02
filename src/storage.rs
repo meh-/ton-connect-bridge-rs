@@ -5,8 +5,6 @@ use redis::{streams::StreamMaxlen, AsyncCommands, Value};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const REDIS_INBOX_TTL: i64 = 600;
-const MAX_STORED_MESSAGES_PER_CLIENT: usize = 1000;
 const ALL_MSGS_CHAN: &str = "messages";
 
 #[derive(Debug)]
@@ -35,6 +33,22 @@ pub trait EventStorage: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct RedisEventStorage {
     pub redis_pool: Arc<bb8::Pool<RedisConnectionManager>>,
+    inbox_inactive_ttl_sec: i64,
+    max_messages_per_inbox: usize,
+}
+
+impl RedisEventStorage {
+    pub fn new(
+        redis_pool: bb8::Pool<RedisConnectionManager>,
+        inbox_inactive_ttl_sec: u16,
+        max_messages_per_inbox: usize,
+    ) -> Self {
+        Self {
+            redis_pool: Arc::new(redis_pool),
+            inbox_inactive_ttl_sec: inbox_inactive_ttl_sec.into(),
+            max_messages_per_inbox,
+        }
+    }
 }
 
 impl EventStorage for RedisEventStorage {
@@ -52,11 +66,11 @@ impl EventStorage for RedisEventStorage {
         let results: [String; 1] = redis::pipe()
             .xadd_maxlen(
                 inbox_key.clone(),
-                StreamMaxlen::Approx(MAX_STORED_MESSAGES_PER_CLIENT),
+                StreamMaxlen::Approx(self.max_messages_per_inbox),
                 "*",
                 &[("event", value.clone())],
             )
-            .expire(inbox_key, REDIS_INBOX_TTL)
+            .expire(inbox_key, self.inbox_inactive_ttl_sec)
             .ignore()
             .query_async(&mut *conn)
             .await

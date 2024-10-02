@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::handlers::{message_handler, sse_handler};
 use crate::message_courier::MessageCourier;
 use crate::storage::EventStorage;
@@ -37,6 +38,7 @@ pub async fn start(router: Router, address: SocketAddr) {
 
 #[derive(Clone)]
 pub struct AppState<S, C> {
+    pub config: Config,
     pub event_saver: Arc<S>,
     pub subscription_manager: Arc<C>,
 }

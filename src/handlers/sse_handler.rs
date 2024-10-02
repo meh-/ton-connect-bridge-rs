@@ -13,8 +13,6 @@ use futures::stream::{select_all, Stream};
 use serde::{Deserialize, Deserializer};
 use std::{convert::Infallible, time::Duration};
 
-const HEARTBEAT_INTERVAL_SECS: u64 = 5;
-
 pub async fn sse_handler<S, C>(
     Query(params): Query<SubscribeToEventsQueryParams>,
     State(state): State<AppState<S, C>>,
@@ -52,7 +50,7 @@ where
     let stream = combined_old_events_stream.chain(combined_live_stream);
     Ok(Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS))
+            .interval(Duration::from_secs(state.config.sse_heartbeat_interval_sec))
             .event(EventResponse::Heartbeat.into()),
     ))
 }
