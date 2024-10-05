@@ -1,4 +1,4 @@
-use super::{AppError, Query};
+use super::{AppError, Query, ValidationError, MAX_CLIENT_ID_LEN};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
@@ -21,6 +21,8 @@ where
     S: EventStorage,
     C: MessageCourier,
 {
+    params.validate(state.config.max_client_ids_per_connection)?;
+
     let mut old_events_streams = vec![];
     if let Some(last_event_id) = params.last_event_id {
         for client_id in &params.client_ids {
@@ -55,11 +57,37 @@ where
     ))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct SubscribeToEventsQueryParams {
     #[serde(rename = "client_id", deserialize_with = "deserialize_list_of_strings")]
     client_ids: Vec<String>,
     last_event_id: Option<String>,
+}
+
+impl SubscribeToEventsQueryParams {
+    fn validate(&self, max_client_ids: usize) -> Result<(), ValidationError> {
+        if self.client_ids.is_empty() {
+            return Err(ValidationError(
+                "Failed to deserialize query string: field `client_id` is empty".into(),
+            ));
+        }
+
+        if self.client_ids.len() > max_client_ids {
+            return Err(ValidationError(
+                format!("Failed to deserialize query string: field `client_id` must contain no more than {max_client_ids} ids"),
+            ));
+        }
+
+        for id in &self.client_ids {
+            if id.len() > MAX_CLIENT_ID_LEN {
+                return Err(ValidationError(
+                    format!("Failed to deserialize query string: field `client_id` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn deserialize_list_of_strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -67,7 +95,14 @@ where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    Ok(s.split(',').map(str::to_string).collect())
+    let r = s
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    Ok(r)
 }
 
 pub enum EventResponse {
@@ -87,5 +122,122 @@ impl From<EventResponse> for sse::Event {
                     .data(data)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::Config,
+        mocks::{MockCourier, MockStorage},
+    };
+    use axum::{http::Request, routing::get, Router};
+    use reqwest::StatusCode;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    const EP_PATH: &str = "/events";
+    const MAX_CLIENT_IDS: usize = 10;
+
+    async fn exec(
+        query_string: String,
+        storage: Option<MockStorage>,
+        courier: Option<MockCourier>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut config = Config::new().unwrap();
+        config.max_client_ids_per_connection = MAX_CLIENT_IDS;
+
+        let app_state = AppState {
+            config,
+            event_saver: Arc::new(storage.unwrap_or(MockStorage::new())),
+            subscription_manager: Arc::new(courier.unwrap_or(MockCourier::new())),
+        };
+
+        let app = Router::new()
+            .route(EP_PATH, get(sse_handler))
+            .with_state(app_state);
+
+        let request = Request::builder()
+            .uri(EP_PATH.to_string() + "?" + &query_string)
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(request).await.unwrap();
+        let code = resp.status();
+        let resp_body = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+
+        let resp_json: serde_json::Value = serde_json::from_str(&resp_body).unwrap();
+        (code, resp_json)
+    }
+
+    #[tokio::test]
+    async fn test_missing_client_id() {
+        let expected_resp = json!(AppError {
+            message: "Failed to deserialize query string: missing field `client_id`".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "cli=1".to_string();
+
+        let (status, resp_body) = exec(q_string, None, None).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_empty_client_id() {
+        let expected_resp = json!(AppError {
+            message: "Failed to deserialize query string: field `client_id` is empty".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let q_string = "client_id=&last_event_id=2".to_string();
+
+        let (status, resp_body) = exec(q_string, None, None).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_to_many_client_ids() {
+        let expected_resp = json!(AppError {
+            message: format!("Failed to deserialize query string: field `client_id` must contain no more than {MAX_CLIENT_IDS} ids"),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let ids = (1..MAX_CLIENT_IDS * 2)
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        let q_string = format!("client_id={ids}");
+        let (status, resp_body) = exec(q_string, None, None).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
+    }
+
+    #[tokio::test]
+    async fn test_too_long_client_id_value() {
+        let expected_resp = json!(AppError {
+            message: format!("Failed to deserialize query string: field `client_id` must not exceed {MAX_CLIENT_ID_LEN} characters"),
+            status: StatusCode::BAD_REQUEST,
+        });
+
+        let long_id = "a".repeat(MAX_CLIENT_ID_LEN + 1);
+        let q_string = format!("client_id=1,{long_id}");
+        let (status, resp_body) = exec(q_string, None, None).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp_body, expected_resp)
     }
 }

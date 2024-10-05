@@ -9,3 +9,5 @@ inbox_max_message_ttl_sec: 500
 inbox_min_message_ttl_sec: 5
 inbox_max_messages_per_client: 1000
 inbox_inactive_ttl_sec: 600
+
+max_client_ids_per_connection: 100

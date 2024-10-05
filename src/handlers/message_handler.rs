@@ -1,3 +1,4 @@
+use super::{AppError, Query, ValidationError, MAX_CLIENT_ID_LEN};
 use crate::models::TonEvent;
 use crate::server::AppState;
 use crate::storage::EventStorage;
@@ -5,10 +6,6 @@ use axum::{extract::State, http::StatusCode, Json};
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use super::{AppError, Query, ValidationError};
-
-const MAX_CLIENT_ID_LEN: usize = 64;
 
 pub async fn message_handler<S, C>(
     Query(query): Query<SendMessageQueryParams>,
@@ -49,7 +46,7 @@ where
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct SendMessageQueryParams {
     client_id: String,
     to: String,
@@ -161,16 +158,6 @@ mod tests {
 
     const EP_PATH: &str = "/message";
 
-    fn create_app<S, C>(app_state: AppState<S, C>) -> Router
-    where
-        S: EventStorage + Clone + Send + Sync + 'static,
-        C: MessageCourier + Clone + Send + Sync + 'static,
-    {
-        Router::new()
-            .route(EP_PATH, post(message_handler))
-            .with_state(app_state)
-    }
-
     async fn exec(
         storage: MockStorage,
         query_string: String,
@@ -186,7 +173,9 @@ mod tests {
             subscription_manager: Arc::new(courier_mock),
         };
 
-        let app = create_app(app_state);
+        let app = Router::new()
+            .route(EP_PATH, post(message_handler))
+            .with_state(app_state);
         let request = Request::builder()
             .method("POST")
             .uri(EP_PATH.to_string() + "?" + &query_string)

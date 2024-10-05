@@ -12,6 +12,8 @@ use axum::{
 };
 use serde::{Serialize, Serializer};
 
+const MAX_CLIENT_ID_LEN: usize = 64;
+
 #[derive(Serialize, Debug)]
 pub struct AppError {
     pub message: String,

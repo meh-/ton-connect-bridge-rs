@@ -23,6 +23,8 @@ pub struct Config {
     /// for a client, then the whole client's inbox (messages) will be dropped
     /// to reduce the redis resources consumption.
     pub inbox_inactive_ttl_sec: u16,
+
+    pub max_client_ids_per_connection: usize,
 }
 impl Config {
     pub fn new() -> Result<Self, config::ConfigError> {
