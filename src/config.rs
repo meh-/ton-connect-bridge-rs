@@ -10,6 +10,8 @@ pub struct Config {
     pub server_address: SocketAddr,
 
     pub sse_heartbeat_interval_sec: u64,
+    /// For how long it should be allowed to keep an open sse connection if there aren't messages
+    pub sse_client_without_messages_ttl_sec: u64,
     /// Max ttl for an individual message.
     pub inbox_max_message_ttl_sec: u16,
     /// If the ttl parameter in an incoming request is less than this min ttl,
@@ -24,6 +26,7 @@ pub struct Config {
     /// to reduce the redis resources consumption.
     pub inbox_inactive_ttl_sec: u16,
 
+    /// How many client ids can be passed to the sse endpoint in a single request
     pub max_client_ids_per_connection: usize,
 }
 impl Config {

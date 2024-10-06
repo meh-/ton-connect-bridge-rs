@@ -5,7 +5,7 @@ use crate::storage::EventStorage;
 use axum::{extract::State, http::StatusCode, Json};
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub async fn message_handler<S, C>(
     Query(query): Query<SendMessageQueryParams>,
@@ -29,13 +29,17 @@ where
         })
         .unwrap_or(state.config.inbox_max_message_ttl_sec);
 
-    let deadline = SystemTime::now() + Duration::from_secs(ttl.into());
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + u64::from(ttl);
     let event = TonEvent {
         id: "".to_string(),
         from: query.client_id,
         to: query.to,
         message: body,
-        deadline: deadline.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        deadline,
     };
 
     state.event_saver.add(event).await?;

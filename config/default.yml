@@ -4,6 +4,7 @@ redis_conn_timeout_sec: 5
 server_address: "127.0.0.1:3000"
 
 sse_heartbeat_interval_sec: 5
+sse_client_without_messages_ttl_sec: 120
 
 inbox_max_message_ttl_sec: 500
 inbox_min_message_ttl_sec: 5

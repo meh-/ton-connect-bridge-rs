@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TonEvent {
     #[serde(skip_serializing_if = "String::is_empty")]
     #[serde(default = "default_id")]

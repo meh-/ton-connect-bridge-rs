@@ -41,7 +41,8 @@ async fn main() {
     }
 
     let redis_client = redis::Client::open(cfg.redis_url).expect("initializing redis client");
-    let subscription_manager = RedisMessageCourier::new(redis_client);
+    let subscription_manager =
+        RedisMessageCourier::new(redis_client, cfg.sse_client_without_messages_ttl_sec);
 
     let manager = subscription_manager.clone();
     manager.start("messages");

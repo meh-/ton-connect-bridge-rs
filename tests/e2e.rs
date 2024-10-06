@@ -35,18 +35,20 @@ async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
         .await
         .unwrap();
 
-    let redis_client = redis::Client::open(redis_url.clone()).unwrap();
-    let subscription_manager = RedisMessageCourier::new(redis_client);
-
-    let manager = subscription_manager.clone();
-    manager.start("messages");
-
     let config = Config::new().unwrap();
     let event_storage = RedisEventStorage::new(
         redis_pool,
         config.inbox_inactive_ttl_sec,
         config.inbox_max_messages_per_client,
     );
+
+    let redis_client = redis::Client::open(redis_url.clone()).unwrap();
+    let subscription_manager =
+        RedisMessageCourier::new(redis_client, config.sse_client_without_messages_ttl_sec);
+
+    let manager = subscription_manager.clone();
+    manager.start("messages");
+
     let app_state = server::AppState {
         config,
         event_saver: Arc::new(event_storage),
