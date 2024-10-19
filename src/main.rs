@@ -57,6 +57,11 @@ async fn main() {
         event_saver: Arc::new(event_storage),
         subscription_manager: Arc::new(subscription_manager),
     };
-    let router = server::router(app_state);
-    server::start(router, cfg.server_address).await;
+    let app_router = server::router(app_state);
+    let metrics_router = server::metrics_router();
+
+    tokio::join!(
+        server::start(app_router, cfg.server_address),
+        server::start(metrics_router, cfg.metrics_server_address),
+    );
 }

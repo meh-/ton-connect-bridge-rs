@@ -8,6 +8,7 @@ pub struct Config {
     pub redis_url: String,
     pub redis_conn_timeout_sec: u64,
     pub server_address: SocketAddr,
+    pub metrics_server_address: SocketAddr,
 
     pub sse_heartbeat_interval_sec: u64,
     /// For how long it should be allowed to keep an open sse connection if there aren't messages
