@@ -80,7 +80,8 @@ impl EventStorage for RedisEventStorage {
 
         let value =
             serde_json::to_string(&event).map_err(|err| EventStorageError(err.to_string()))?;
-        conn.publish(ALL_MSGS_CHAN, value)
+        let _: () = conn
+            .publish(ALL_MSGS_CHAN, value)
             .await
             .map_err(|err| EventStorageError(err.to_string()))?;
 
