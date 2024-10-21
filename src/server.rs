@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::handlers::{message_handler, sse_handler};
 use crate::message_courier::MessageCourier;
-use crate::metrics;
 use crate::storage::EventStorage;
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::{self, Next};
@@ -14,6 +13,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use std::future::ready;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
 
@@ -63,10 +63,14 @@ async fn http_metrics_middleware(req: Request, next: Next) -> impl IntoResponse 
         "invalid".to_owned()
     };
 
+    let start = Instant::now();
     let response = next.run(req).await;
+    let duration = start.elapsed().as_secs_f64();
 
     let status = response.status().as_u16().to_string();
-    metrics::count_http_request(method, path, status);
+    let labels = [("method", method), ("path", path), ("status", status)];
+    metrics::counter!("http_requests_total", &labels).increment(1);
+    metrics::histogram!("http_requests_duration_seconds", &labels).record(duration);
 
     response
 }

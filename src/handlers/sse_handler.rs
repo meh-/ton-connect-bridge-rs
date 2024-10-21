@@ -1,7 +1,4 @@
 use super::{AppError, Query, ValidationError, MAX_CLIENT_ID_LEN};
-use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_stream::StreamExt as _;
-
 use crate::server::AppState;
 use crate::storage::EventStorage;
 use crate::{message_courier::MessageCourier, models::TonEvent};
@@ -11,7 +8,12 @@ use axum::{
 };
 use futures::stream::{select_all, Stream};
 use serde::{Deserialize, Deserializer};
+use std::pin::Pin;
+use std::task::Poll;
+use std::time::Instant;
 use std::{convert::Infallible, time::Duration};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::StreamExt as _;
 
 pub async fn sse_handler<S, C>(
     Query(params): Query<SubscribeToEventsQueryParams>,
@@ -22,6 +24,8 @@ where
     C: MessageCourier,
 {
     params.validate(state.config.max_client_ids_per_connection)?;
+
+    metrics::histogram!("client_ids_per_connection").record(params.client_ids.len() as f64);
 
     let mut old_events_streams = vec![];
     if let Some(last_event_id) = params.last_event_id {
@@ -50,7 +54,7 @@ where
     let combined_live_stream = select_all(live_streams);
 
     let stream = combined_old_events_stream.chain(combined_live_stream);
-    Ok(Sse::new(stream).keep_alive(
+    Ok(Sse::new(TrackedStream::new(stream)).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(Duration::from_secs(state.config.sse_heartbeat_interval_sec))
             .event(EventResponse::Heartbeat.into()),
@@ -122,6 +126,50 @@ impl From<EventResponse> for sse::Event {
                     .data(data)
             }
         }
+    }
+}
+
+struct TrackedStream<S> {
+    start: Instant,
+    inner: S,
+}
+
+impl<S> TrackedStream<S> {
+    pub fn new(inner: S) -> Self {
+        metrics::gauge!("active_connections_number").increment(1);
+        Self {
+            start: Instant::now(),
+            inner,
+        }
+    }
+}
+
+impl<S> Stream for TrackedStream<S>
+where
+    S: Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                metrics::counter!("messages_sent_to_clients_total").increment(1);
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S> Drop for TrackedStream<S> {
+    fn drop(&mut self) {
+        let duration = self.start.elapsed().as_secs_f64();
+        metrics::histogram!("sse_session_duration_seconds").record(duration);
+        metrics::gauge!("active_connections_number").decrement(1);
     }
 }
 

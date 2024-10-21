@@ -47,6 +47,7 @@ impl RedisMessageCourier {
             loop {
                 interval.tick().await;
                 let mut cli = clients.lock().unwrap();
+                metrics::gauge!("active_tracked_client_ids").set(cli.len() as f64);
                 let now = Instant::now();
                 cli.retain(|client_id, sub| {
                     if now.duration_since(sub.last_message_at) < ttl {
