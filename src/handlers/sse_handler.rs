@@ -6,43 +6,28 @@ use axum::{
     extract::State,
     response::sse::{self, Event, Sse},
 };
+use futures::stream::StreamExt;
 use futures::stream::{select_all, Stream};
 use serde::{Deserialize, Deserializer};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Instant;
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_stream::StreamExt as _;
 
 pub async fn sse_handler<S, C>(
     Query(params): Query<SubscribeToEventsQueryParams>,
     State(state): State<AppState<S, C>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError>
 where
-    S: EventStorage,
+    S: EventStorage + 'static,
     C: MessageCourier,
 {
     params.validate(state.config.max_client_ids_per_connection)?;
-
     metrics::histogram!("client_ids_per_connection").record(params.client_ids.len() as f64);
 
-    let mut old_events_streams = vec![];
-    if let Some(last_event_id) = params.last_event_id {
-        for client_id in &params.client_ids {
-            let events = state
-                .event_saver
-                .get_since(&client_id, &last_event_id)
-                .await?;
-            let stream = tokio_stream::iter(
-                events
-                    .into_iter()
-                    .map(|ton_event| Ok(EventResponse::Message(ton_event).into())),
-            );
-            old_events_streams.push(stream);
-        }
-    }
-    let combined_old_events_stream = select_all(old_events_streams);
+    let old_events_stream = get_old_events(state.event_saver, &params).await?;
 
     let mut live_streams = vec![];
     for client_id in params.client_ids {
@@ -53,12 +38,55 @@ where
     }
     let combined_live_stream = select_all(live_streams);
 
-    let stream = combined_old_events_stream.chain(combined_live_stream);
+    let stream = old_events_stream.chain(combined_live_stream);
     Ok(Sse::new(TrackedStream::new(stream)).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(Duration::from_secs(state.config.sse_heartbeat_interval_sec))
             .event(EventResponse::Heartbeat.into()),
     ))
+}
+
+async fn get_old_events<S>(
+    event_storage: Arc<S>,
+    params: &SubscribeToEventsQueryParams,
+) -> Result<impl Stream<Item = Result<sse::Event, Infallible>>, AppError>
+where
+    S: EventStorage,
+{
+    const CONCURRENCY: usize = 5;
+    if params.last_event_id.is_none() {
+        return Ok(select_all(vec![]));
+    }
+
+    let last_event_id = params.last_event_id.as_ref().unwrap();
+    let tasks = tokio_stream::iter(params.client_ids.iter().cloned())
+        .map(|client_id| {
+            let event_storage = event_storage.clone();
+            async move {
+                event_storage
+                    .get_since(&client_id, &last_event_id)
+                    .await
+                    .map(|events| {
+                        tokio_stream::iter(
+                            events
+                                .into_iter()
+                                .map(|ton_event| Ok(EventResponse::Message(ton_event).into())),
+                        )
+                    })
+            }
+        })
+        .buffer_unordered(CONCURRENCY);
+
+    let mut streams = vec![];
+    let results: Vec<_> = tasks.collect().await;
+    for result in results {
+        match result {
+            Ok(stream) => streams.push(stream),
+            Err(e) => tracing::error!("failed to get s tream of old events: {:?}", e),
+        }
+    }
+
+    Ok(select_all(streams))
 }
 
 #[derive(Deserialize, Debug)]
