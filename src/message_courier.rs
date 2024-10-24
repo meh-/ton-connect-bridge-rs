@@ -10,8 +10,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
 
-// const MAX_INACTIVE_CLIENT_TTL: Duration = Duration::from_secs(5);
-
 pub trait MessageCourier: Send + Sync {
     fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent>;
     fn start(self, channel: &str);
