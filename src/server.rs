@@ -25,6 +25,7 @@ where
     Router::new()
         .route("/events", get(sse_handler))
         .route("/message", post(message_handler))
+        .route("/health", get(healthcheck))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
@@ -73,4 +74,8 @@ async fn http_metrics_middleware(req: Request, next: Next) -> impl IntoResponse 
     metrics::histogram!("http_requests_duration_seconds", &labels).record(duration);
 
     response
+}
+
+async fn healthcheck() -> axum::response::Result<String> {
+    Ok("OK".into())
 }
