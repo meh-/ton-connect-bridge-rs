@@ -5,8 +5,6 @@ use redis::{streams::StreamMaxlen, AsyncCommands, Value};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const ALL_MSGS_CHAN: &str = "messages";
-
 #[derive(Debug)]
 pub struct EventStorageError(String);
 
@@ -32,9 +30,10 @@ pub trait EventStorage: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct RedisEventStorage {
-    pub redis_pool: Arc<bb8::Pool<RedisConnectionManager>>,
+    redis_pool: Arc<bb8::Pool<RedisConnectionManager>>,
     inbox_inactive_ttl_sec: i64,
     max_messages_per_inbox: usize,
+    global_stream_max_size: usize,
 }
 
 impl RedisEventStorage {
@@ -42,11 +41,13 @@ impl RedisEventStorage {
         redis_pool: bb8::Pool<RedisConnectionManager>,
         inbox_inactive_ttl_sec: u16,
         max_messages_per_inbox: usize,
+        global_stream_max_size: usize,
     ) -> Self {
         Self {
             redis_pool: Arc::new(redis_pool),
             inbox_inactive_ttl_sec: inbox_inactive_ttl_sec.into(),
             max_messages_per_inbox,
+            global_stream_max_size,
         }
     }
 }
@@ -80,8 +81,14 @@ impl EventStorage for RedisEventStorage {
 
         let value =
             serde_json::to_string(&event).map_err(|err| EventStorageError(err.to_string()))?;
+
         let _: () = conn
-            .publish(ALL_MSGS_CHAN, value)
+            .xadd_maxlen(
+                "messages",
+                StreamMaxlen::Approx(self.global_stream_max_size),
+                "*",
+                &[("event", value)],
+            )
             .await
             .map_err(|err| EventStorageError(err.to_string()))?;
 

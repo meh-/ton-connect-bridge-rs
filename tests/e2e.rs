@@ -37,14 +37,14 @@ async fn start_test_server() -> (TestServer, ContainerAsync<Redis>) {
 
     let config = Config::new().unwrap();
     let event_storage = RedisEventStorage::new(
-        redis_pool,
+        redis_pool.clone(),
         config.inbox_inactive_ttl_sec,
         config.inbox_max_messages_per_client,
+        config.global_stream_max_size,
     );
 
-    let redis_client = redis::Client::open(redis_url.clone()).unwrap();
     let subscription_manager =
-        RedisMessageCourier::new(redis_client, config.sse_client_without_messages_ttl_sec);
+        RedisMessageCourier::new(redis_pool, config.sse_client_without_messages_ttl_sec);
 
     let manager = subscription_manager.clone();
     manager.start("messages");

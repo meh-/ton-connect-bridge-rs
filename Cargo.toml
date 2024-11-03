@@ -24,6 +24,7 @@ tower-http = { version = "0.5.2", features = ["trace"] }
 base64 = "0.22"
 metrics = { version = "0.24" }
 metrics-exporter-prometheus = { version = "0.16" }
+anyhow = "1.0.92"
 
 [dev-dependencies]
 eventsource-stream = "0.2.3"

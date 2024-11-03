@@ -13,3 +13,5 @@ inbox_max_messages_per_client: 1000
 inbox_inactive_ttl_sec: 600
 
 max_client_ids_per_connection: 100
+
+global_stream_max_size: 30000

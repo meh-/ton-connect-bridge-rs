@@ -11,7 +11,7 @@ pub struct Config {
     pub metrics_server_address: SocketAddr,
 
     pub sse_heartbeat_interval_sec: u64,
-    /// For how long it should be allowed to keep an open sse connection if there aren't messages
+    /// For how long it should be allowed to keep an open sse connection if there aren't messages.
     pub sse_client_without_messages_ttl_sec: u64,
     /// Max ttl for an individual message.
     pub inbox_max_message_ttl_sec: u16,
@@ -27,8 +27,14 @@ pub struct Config {
     /// to reduce the redis resources consumption.
     pub inbox_inactive_ttl_sec: u16,
 
-    /// How many client ids can be passed to the sse endpoint in a single request
+    /// How many client ids can be passed to the sse endpoint in a single request.
     pub max_client_ids_per_connection: usize,
+
+    /// Size of the global messages stream should be enough to handle
+    ///  short (less than a minute) consumers outages, and do not loose any messages
+    /// even if producers are actively pushing new messages while consumers are down.
+    /// Obviously the bigger size the more resources Redis requires
+    pub global_stream_max_size: usize,
 }
 impl Config {
     pub fn new() -> Result<Self, config::ConfigError> {

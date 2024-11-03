@@ -1,5 +1,10 @@
 use crate::models::TonEvent;
-use serde_json::from_str;
+use anyhow::{bail, Result};
+use bb8_redis::RedisConnectionManager;
+use redis::{
+    streams::{StreamReadOptions, StreamReadReply},
+    AsyncCommands,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -8,7 +13,6 @@ use std::{
 use tokio::sync::mpsc::{self};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::Duration;
-use tokio_stream::StreamExt;
 
 pub trait MessageCourier: Send + Sync {
     fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent>;
@@ -18,7 +22,7 @@ pub trait MessageCourier: Send + Sync {
 #[derive(Clone)]
 pub struct RedisMessageCourier {
     clients: Arc<Mutex<HashMap<String, ClientSubscription>>>,
-    redis: Arc<redis::Client>,
+    redis_pool: Arc<bb8::Pool<RedisConnectionManager>>,
     client_without_messages_ttl_sec: Duration,
 }
 
@@ -28,10 +32,13 @@ struct ClientSubscription {
 }
 
 impl RedisMessageCourier {
-    pub fn new(redis: redis::Client, client_without_messages_ttl_sec: u64) -> Self {
+    pub fn new(
+        redis_pool: bb8::Pool<RedisConnectionManager>,
+        client_without_messages_ttl_sec: u64,
+    ) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
-            redis: Arc::new(redis),
+            redis_pool: Arc::new(redis_pool),
             client_without_messages_ttl_sec: Duration::from_secs(client_without_messages_ttl_sec),
         }
     }
@@ -58,6 +65,70 @@ impl RedisMessageCourier {
             }
         });
     }
+
+    async fn process_stream(&self, channel: &str) {
+        let mut last_event_id = "$".to_string();
+        let read_opts = StreamReadOptions::default().block(1000).count(500);
+
+        loop {
+            let mut conn = match self.redis_pool.get().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!("getting redis connection from pool: {}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            loop {
+                tracing::debug!("executing xread with id {}", &last_event_id);
+                let reply: StreamReadReply = match conn
+                    .xread_options(&[channel], &[&last_event_id], &read_opts)
+                    .await
+                {
+                    Ok(reply) => reply,
+                    Err(e) => {
+                        tracing::error!("executing XREAD command: {}", e);
+                        break;
+                    }
+                };
+
+                for stream_res in reply.keys {
+                    for entry in stream_res.ids {
+                        if let Err(e) = self.process_stream_event(&entry).await {
+                            tracing::error!("processing live stream entry: {}", e);
+                            metrics::counter!("invalid_stream_events_total").increment(1);
+                        }
+                        last_event_id = entry.id.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    async fn process_stream_event(&self, entry: &redis::streams::StreamId) -> Result<()> {
+        if let Some(redis::Value::Data(raw_event)) = entry.get("event") {
+            let payload = String::from_utf8(raw_event.to_vec())?;
+            tracing::debug!("live stream event: {}", payload);
+            let event: TonEvent = serde_json::from_str(&payload)?;
+
+            let mut clients = self.clients.lock().unwrap();
+            if let Some(sub) = clients.get_mut(&event.to.clone()) {
+                tracing::debug!("sending message to '{}'", event.to);
+                if let Err(e) = sub.tx.send(event.clone()) {
+                    tracing::debug!("error sending message to '{}': {}", event.to, e);
+                    clients.remove(&event.to);
+                } else {
+                    sub.last_message_at = Instant::now();
+                }
+            } else {
+                tracing::debug!("no client found for '{}'", event.to);
+            }
+            Ok(())
+        } else {
+            bail!("live stream entry doesn't contain event field");
+        }
+    }
 }
 
 impl MessageCourier for RedisMessageCourier {
@@ -66,30 +137,7 @@ impl MessageCourier for RedisMessageCourier {
 
         let channel = channel.to_string();
         tokio::spawn(async move {
-            let mut pubsub = self.redis.get_async_pubsub().await.unwrap();
-            pubsub.subscribe(channel).await.unwrap();
-
-            while let Some(msg) = pubsub.on_message().next().await {
-                let payload: String = msg.get_payload().unwrap();
-                tracing::debug!("channel '{}': {}", msg.get_channel_name(), payload);
-
-                if let Ok(event) = from_str::<TonEvent>(&payload) {
-                    let mut cli = self.clients.lock().unwrap();
-                    if let Some(sub) = cli.get_mut(&event.to.clone()) {
-                        tracing::debug!("sending message to '{}'", event.to);
-                        if let Err(e) = sub.tx.send(event.clone()) {
-                            tracing::debug!("error sending message to '{}': {}", event.to, e);
-                            cli.remove(&event.to);
-                        } else {
-                            sub.last_message_at = Instant::now();
-                        }
-                    } else {
-                        tracing::info!("no client found for '{}'", event.to);
-                    }
-                } else {
-                    tracing::error!("invalid message: '{}'", payload);
-                }
-            }
+            self.process_stream(&channel).await;
         });
     }
 
@@ -107,7 +155,8 @@ impl MessageCourier for RedisMessageCourier {
 #[cfg(test)]
 mod test {
     use super::*;
-    use redis::Commands;
+    use bb8_redis::RedisConnectionManager;
+    use redis::AsyncCommands;
     use std::time::{SystemTime, UNIX_EPOCH};
     use testcontainers_modules::{
         redis::{Redis, REDIS_PORT},
@@ -115,29 +164,30 @@ mod test {
     };
     use tokio::time::timeout;
 
-    const MESSAGES_CHANNEL: &str = "messages";
+    const MESSAGES_STREAM: &str = "messages";
 
-    async fn setup_redis() -> (redis::Client, ContainerAsync<Redis>) {
+    async fn setup_redis() -> (bb8::Pool<RedisConnectionManager>, ContainerAsync<Redis>) {
         let container = Redis::default().with_tag("alpine").start().await.unwrap();
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(REDIS_PORT).await.unwrap();
         let conn_str = format!("redis://{host}:{port}");
-        let redis_client = redis::Client::open(conn_str.clone()).unwrap();
-        (redis_client, container)
+        let manager = RedisConnectionManager::new(conn_str).unwrap();
+        let pool = bb8::Pool::builder().build(manager).await.unwrap();
+        (pool, container)
     }
 
     #[tokio::test]
     async fn test_inactive_client_is_removed() {
-        let (redis_client, _container) = setup_redis().await;
+        let (redis_pool, _container) = setup_redis().await;
         let inactive_ttl: Duration = Duration::from_secs(1);
-        let courier = RedisMessageCourier::new(redis_client.clone(), inactive_ttl.as_secs());
+        let courier = RedisMessageCourier::new(redis_pool.clone(), inactive_ttl.as_secs());
 
         let client_id = "wallet_client".to_string();
 
         // start the message courier and subscribe the client
-        courier.clone().start(MESSAGES_CHANNEL);
+        courier.clone().start(MESSAGES_STREAM);
         let mut rx = courier.register_client(client_id.clone());
-        // let the courier to spawn all tasks
+        // let the courier spawn all tasks
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // send a dummy ton event to the subscribed client via a real redis connection
@@ -153,11 +203,13 @@ mod test {
                 + 10,
         };
         let value = serde_json::to_string(&event).expect("marshalling test ton event");
-        redis_client
-            .get_connection()
+        let _: () = redis_pool
+            .get()
+            .await
             .unwrap()
-            .publish::<_, _, ()>(MESSAGES_CHANNEL, value)
-            .expect("sending test message to pubsub");
+            .xadd(MESSAGES_STREAM.to_string(), "*", &[("event", value)])
+            .await
+            .expect("sending test message to stream");
 
         // verify that the client receives the ton event as is
         match timeout(Duration::from_millis(200), rx.recv()).await {

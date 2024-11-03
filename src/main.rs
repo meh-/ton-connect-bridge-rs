@@ -40,9 +40,8 @@ async fn main() {
         assert_eq!(result, "bar");
     }
 
-    let redis_client = redis::Client::open(cfg.redis_url).expect("initializing redis client");
     let subscription_manager =
-        RedisMessageCourier::new(redis_client, cfg.sse_client_without_messages_ttl_sec);
+        RedisMessageCourier::new(redis_pool.clone(), cfg.sse_client_without_messages_ttl_sec);
 
     let manager = subscription_manager.clone();
     manager.start("messages");
@@ -51,6 +50,7 @@ async fn main() {
         redis_pool,
         cfg.inbox_inactive_ttl_sec,
         cfg.inbox_max_messages_per_client,
+        cfg.global_stream_max_size,
     );
     let app_state = server::AppState {
         config: cfg_clone,
