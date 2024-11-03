@@ -6,18 +6,15 @@ use std::time::Duration;
 use ton_connect_bridge_rs::message_courier::{MessageCourier, RedisMessageCourier};
 use ton_connect_bridge_rs::storage::RedisEventStorage;
 use ton_connect_bridge_rs::{config, server};
-use tracing::Level;
 
 #[tokio::main]
 async fn main() {
     let cfg = config::Config::new().expect("loading app config");
-    // to pass the cfg later to the shared app state
-    let cfg_clone = cfg.clone();
 
     tracing_subscriber::fmt()
         .with_target(false)
         .compact()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(cfg.log_level())
         .init();
 
     let redis_conn_manager = RedisConnectionManager::new(cfg.redis_url.clone())
@@ -53,7 +50,7 @@ async fn main() {
         cfg.global_stream_max_size,
     );
     let app_state = server::AppState {
-        config: cfg_clone,
+        config: cfg.clone(),
         event_saver: Arc::new(event_storage),
         subscription_manager: Arc::new(subscription_manager),
     };

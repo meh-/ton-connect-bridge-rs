@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
+    pub log_level: String,
     pub redis_url: String,
     pub redis_conn_timeout_sec: u64,
     pub server_address: SocketAddr,
@@ -44,5 +45,14 @@ impl Config {
             .build()?;
 
         cfg.try_deserialize()
+    }
+
+    pub fn log_level(&self) -> tracing::Level {
+        match self.log_level.to_lowercase().as_str() {
+            "debug" => tracing::Level::DEBUG,
+            "info" => tracing::Level::INFO,
+            "error" => tracing::Level::ERROR,
+            _ => tracing::Level::INFO,
+        }
     }
 }
