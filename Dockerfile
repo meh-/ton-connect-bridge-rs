@@ -20,6 +20,7 @@ COPY --from=builder /app/config/default.yml /app/config/default.yml
 
 RUN apt-get update \
     && apt-get install -y ca-certificates \
+    && apt-get install -y curl \
     && rm -rf /var/lib/apt/lists/*
 RUN update-ca-certificates
 

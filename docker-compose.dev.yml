@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - 6379:6379
+
+  server:
+    build: .
+    environment:
+      - APP_REDIS_URL=redis://redis:6379
+      - APP_SERVER_ADDRESS=0.0.0.0:3000
+      - APP_METRICS_SERVER_ADDRESS=0.0.0.0:3001
+    ports:
+      - 3000:3000
+      - 3001:3001
