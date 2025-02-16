@@ -5,12 +5,19 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
+    /// The log level for the application.
+    /// Available values are: debug, info, error.
     pub log_level: String,
+    /// The URL for connecting to the Redis server.
     pub redis_url: String,
+    /// The timeout duration for Redis connections, in seconds.
     pub redis_conn_timeout_sec: u64,
+    /// The address for the main bridge server: host + port. Example: `http://localhost:3000`.
     pub server_address: SocketAddr,
+    /// The address for the metrics server: host + port. Example: `http://localhost:3001`
     pub metrics_server_address: SocketAddr,
 
+    /// The interval for sending heartbeat messages over SSE, in seconds.
     pub sse_heartbeat_interval_sec: u64,
     /// For how long it should be allowed to keep an open sse connection if there aren't messages.
     pub sse_client_without_messages_ttl_sec: u64,
@@ -25,14 +32,14 @@ pub struct Config {
     pub inbox_max_messages_per_client: usize,
     /// If there are no new messages within the specified ttl
     /// for a client, then the whole client's inbox (messages) will be dropped
-    /// to reduce the redis resources consumption.
+    /// to reduce the storage's resources consumption.
     pub inbox_inactive_ttl_sec: u16,
 
     /// How many client ids can be passed to the sse endpoint in a single request.
     pub max_client_ids_per_connection: usize,
 
     /// Size of the global messages stream should be enough to handle
-    ///  short (less than a minute) consumers outages, and do not loose any messages
+    /// short (less than a minute) consumers outages, and do not loose any messages
     /// even if producers are actively pushing new messages while consumers are down.
     /// Obviously the bigger size the more resources Redis requires
     pub global_stream_max_size: usize,

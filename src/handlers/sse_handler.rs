@@ -16,6 +16,22 @@ use std::time::Instant;
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+/// Sets up an SSE connection for clients to receive events. It validates the query
+/// parameters, retrieves old events if needed, and combines them with live event streams. The combined stream
+/// is then returned as an SSE response with a keep-alive mechanism.
+///
+/// # Arguments
+///
+/// * `params` - Query parameters of the incoming request, containing all defined by the protocol fields.
+/// * `state` - Application state containing configuration and all necessary dependencies.
+///
+/// # Returns
+///
+/// A result containing an SSE response with a stream of events or an application error.
+///
+/// # Errors
+///
+/// Returns an [AppError] if the query parameters are invalid or if there is an error during retrieving of old events.
 pub async fn sse_handler<S, C>(
     Query(params): Query<SubscribeToEventsQueryParams>,
     State(state): State<AppState<S, C>>,
@@ -46,6 +62,19 @@ where
     ))
 }
 
+/// Retrieves old events for the specified client IDs since the last event ID.
+/// According to the TON Connect protocol there is only one last event ID for all clients,
+/// so we need to fetch events for each client separately.
+///
+/// # Returns
+///
+/// A result containing a stream of old events or an application error.
+/// The resulting stream contains events for all clients combined.
+/// The glbal order of events is not guaranteed, but the order of events for each client ID is preserved.
+///
+/// # Errors
+///
+/// Returns an [AppError] if there is an error retrieving events from the storage.
 async fn get_old_events<S>(
     event_storage: Arc<S>,
     params: &SubscribeToEventsQueryParams,

@@ -7,6 +7,18 @@ use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Handles incoming messages, validates the query parameters and message body,
+/// creates the corresponding [TonEvent] and saves it to the storage.
+///
+/// # Arguments
+///
+/// * `query` - Query parameters for the message according to the TON Connect protocol.
+/// * `state` - Application state containing configuration and all necessary dependencies.
+/// * `body` - The message itself.
+///
+/// # Returns
+///
+/// A JSON response containing the status code and message for the submitted request.
 pub async fn message_handler<S, C>(
     Query(query): Query<SendMessageQueryParams>,
     State(state): State<AppState<S, C>>,

@@ -43,6 +43,7 @@ impl RedisMessageCourier {
         }
     }
 
+    /// Periodically cleans up inactive clients based on the configured TTL and the last processed message time.
     fn cleanup_inactive_clients(&self) {
         let clients = Arc::clone(&self.clients);
         let ttl = self.client_without_messages_ttl_sec.clone();
@@ -66,6 +67,7 @@ impl RedisMessageCourier {
         });
     }
 
+    /// Listens to the stream of messages using blocking read approach and processes all the messages.
     async fn process_stream(&self, channel: &str) {
         let mut last_event_id = "$".to_string();
         let read_opts = StreamReadOptions::default().block(1000).count(500);
@@ -106,6 +108,10 @@ impl RedisMessageCourier {
         }
     }
 
+    /// Processes a single stream message. It parses the message into [TonEvent] and,
+    /// if there is an active [ClientSubscription], sends the event to the corresponding client.
+    /// If the event cannot be sent to the client, the client is removed from the active subscriptions,
+    /// because it is considered inactive.
     async fn process_stream_event(&self, entry: &redis::streams::StreamId) -> Result<()> {
         if let Some(redis::Value::Data(raw_event)) = entry.get("event") {
             let payload = String::from_utf8(raw_event.to_vec())?;
@@ -141,6 +147,9 @@ impl MessageCourier for RedisMessageCourier {
         });
     }
 
+    /// Registers a new client and returns a receiver for the client.
+    /// If there is already a registered client with the same id registered, it will be replaced,
+    /// and a new receiver will be returned.
     fn register_client(&self, client_id: String) -> UnboundedReceiver<TonEvent> {
         let (tx, rx) = mpsc::unbounded_channel::<TonEvent>();
         let sub = ClientSubscription {
